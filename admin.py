@@ -113,6 +113,7 @@ def mutate(action, data):
                 device['blocked']=data['blocked']
             device['revision']=max(time.time_ns(),device['revision']+1);devices.save(registry)
     elif action=='profile/save':
+        if not isinstance(data.get('name'),str) or not 1<=len(data['name'])<=80: raise ValueError('Enter a profile name of 1 to 80 characters.')
         key=data.get('id') or re.sub(r'[^a-z0-9_-]+','-',data['name'].lower()).strip('-_')[:64]
         if not key: raise ValueError('Enter a profile name containing letters or numbers.')
         def change(items):
@@ -133,6 +134,7 @@ def mutate(action, data):
                     item[field]=sorted(set(item[field])|{domain})
         profiles.edit(change, sync=False)
     elif action=='appearance':
+        if not isinstance(data.get('title'),str) or not isinstance(data.get('message'),str): raise ValueError('Enter a block-page heading and message.')
         title=data['title'].strip();message=data['message'].strip()
         if not 1<=len(title)<=100 or not 1<=len(message)<=500: raise ValueError('Enter a title and message within the displayed limits.')
         merge_appearance(dict(revision=time.time_ns(),title=title,message=message))
@@ -188,7 +190,7 @@ def route(handler, parsed):
             reply(handler,200,dict(ok=True),'__Host-dns_session=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return True
         if action=='password':
             path=hub.ROOT/'control/admin-auth.json';password=data['password']
-            if not isinstance(password,str) or not 12<=len(password)<=1024 or not matches(data['current'],hub.load(path)): raise ValueError('Check the current password; the new password needs at least 12 characters.')
+            if not isinstance(password,str) or not 12<=len(password)<=1024 or not isinstance(data.get('current'),str) or not matches(data['current'],hub.load(path)): raise ValueError('Check the current password; the new password needs at least 12 characters.')
             with devices.locked(): profiles.atomic(path,password_record(password))
             with lock: sessions.clear()
             reply(handler,200,dict(ok=True));return True

@@ -4,6 +4,7 @@ import http.client
 import ipaddress
 import json
 import os
+import plistlib
 from pathlib import Path
 import secrets
 import socket
@@ -11,6 +12,7 @@ import ssl
 import struct
 import sys
 import time
+import urllib.parse
 sys.path.insert(0,str(Path(__file__).parents[1]))
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -85,9 +87,14 @@ def check():
     status,_,body=request('/api/console/state',headers={'Cookie':cookie})
     data=json.loads(body);assert status==200 and data['resolver_ready']
     assert hub.load(hub.ROOT/'shared/settings.json')['management_key'] not in body.decode()
-    # Look up the private tokens from the disposable server state only.
-    registry=hub.load(hub.ROOT/'control/devices.json')
-    devices={d['profile']:d for d in registry.values()}
+    # Exercise private Apple downloads rather than reading root-owned host state.
+    devices={}
+    for device in data['devices']:
+        status,_,configuration=request(urllib.parse.urlsplit(device['download_url']).path)
+        assert status==200
+        payload=plistlib.loads(configuration)['PayloadContent'][1]['DNSSettings']
+        device['token']=urllib.parse.urlsplit(payload['ServerURL']).path.split('/')[2]
+        devices[device['profile']]=device
     def resolve(device,name,kind=1):
         packet=hub.dns_query(name)[:-4]+struct.pack('!HH',kind,1)
         status,_,answer=request('/dns/'+device['token']+'/dns-query',packet,{'Content-Type':'application/dns-message'})

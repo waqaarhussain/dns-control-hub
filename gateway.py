@@ -19,6 +19,8 @@ import socket
 import admin
 
 MAX_DNS = 65535
+_routes_lock=threading.Lock()
+_routes_cache=None
 
 def upstream_answer(packet):
     address=os.environ.get('DNS_HUB_RESOLVER')
@@ -42,8 +44,16 @@ def upstream_answer(packet):
         return response.read(MAX_DNS)
 
 def route_matches(domain):
+    global _routes_cache
     path=hub.ROOT/'control/routing.json'
-    routes=hub.load(path) if path.exists() else hub.load(hub.SOURCE/'policy.json')['youtube_domains']
+    generated=path.exists()
+    if not generated: path=hub.SOURCE/'policy.json'
+    stat=path.stat();signature=(str(path),stat.st_mtime_ns,stat.st_size,stat.st_ino)
+    with _routes_lock:
+        if _routes_cache is None or _routes_cache[0]!=signature:
+            value=hub.load(path)
+            _routes_cache=(signature,frozenset(value if generated else value['youtube_domains']))
+        routes=_routes_cache[1]
     return any(name in routes for name in profiles.ancestors(domain))
 
 def read_name(packet, offset):
@@ -105,6 +115,7 @@ def filter_answer(answer, request, profile):
     offset += 4
     result = bytearray(answer)
     denied = False
+    redirected = False
     for index in range(an + ns + ar):
         owner, offset = read_name(answer, offset)
         if offset + 10 > len(answer):
@@ -117,6 +128,7 @@ def filter_answer(answer, request, profile):
         if kind != 41:  # OPT TTL is EDNS flags, not a cache lifetime.
             result[offset+4:offset+8] = b'\0\0\0\0'
         if profile is not None and cls == 1 and index < an:
+            if route_matches(owner): redirected=True
             if profiles.blocked(owner, profile):
                 denied = True
             if kind in (5, 39):  # Inspect compressed CNAME and DNAME targets too.
@@ -125,10 +137,11 @@ def filter_answer(answer, request, profile):
                     raise ValueError('Invalid DNS alias data.')
                 if profiles.blocked(target, profile):
                     denied = True
+                if route_matches(target): redirected=True
         offset = end
     if offset != len(answer):
         raise ValueError('Trailing upstream DNS data.')
-    return bytes(result), denied
+    return site_answer(request,hub.ALBANIA_IP) if redirected else bytes(result), denied
 
 def refuse(packet, rcode=5):
     if len(packet) < 12:

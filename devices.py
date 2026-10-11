@@ -159,6 +159,7 @@ def create_device(name, kind, profile, export=True):
     if export and directory.exists(): raise ValueError('Folder already exists. Choose another device name.')
     with locked():
         data=registry_unlocked()
+        if len(data)>=500: raise ValueError('Device limit reached.')
         if any(d['slug']==slug for d in data.values()): raise ValueError('That device name is already registered.')
         device=dict(id=secrets.token_hex(32),name=name,slug=slug,type=kind,token=secrets.token_hex(32),download_token=secrets.token_hex(32),blocked=False,profile=profile,revision=time.time_ns())
         data[device['id']]=device;save(data)
