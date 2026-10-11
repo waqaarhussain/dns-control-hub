@@ -273,7 +273,7 @@ backend doh
   server doh doh:443 resolvers docker init-addr libc,none
 backend blockpage
   server dns dns:443 resolvers docker init-addr libc,none
-'''.replace('HOSTNAME', host))
+'''.replace('HOSTNAME', host), mode=0o644)
 
 def certificates():
     """Configured hostname: HTTP-01 on VPS 1; VPS 2 imports the same TLS identity."""
@@ -431,6 +431,7 @@ def check():
     encoded = base64.urlsafe_b64encode(query).decode().rstrip('=')
     # TLS verification is mandatory. --connect-to keeps SNI/hostname verification while testing localhost.
     output = subprocess.check_output(['curl', '--fail', '--silent', '--show-error', '--max-time', '20',
+        '--retry', '10', '--retry-connrefused', '--retry-delay', '2', '--retry-max-time', '60',
         '--connect-to', host + ':443:127.0.0.1:443',
         'https://' + host + '/dns/' + key + '/dns-query?dns=' + encoded])
     header = struct.unpack('!6H', output[:12])

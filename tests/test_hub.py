@@ -1,6 +1,7 @@
 import importlib.util
 import http.client
 import io
+import stat
 import json
 from pathlib import Path
 import plistlib
@@ -47,6 +48,8 @@ class HubTests(unittest.TestCase):
             for root in (first, second):
                 nodes.append(json.loads((root / 'node.json').read_text()))
                 self.assertIn('127.0.0.1:5380:5380', (root / 'compose.yaml').read_text())
+                self.assertTrue((root / 'haproxy.cfg').stat().st_mode & stat.S_IROTH)
+                self.assertFalse((root / 'shared/ca.key').stat().st_mode & stat.S_IROTH)
                 self.assertNotIn('"53:53', (root / 'compose.yaml').read_text())
             self.assertNotEqual(nodes[0]['public_ip'], nodes[1]['public_ip'])
             self.assertNotEqual(nodes[0]['admin_password'], nodes[1]['admin_password'])
