@@ -76,6 +76,16 @@ class GatewayTests(unittest.TestCase):
         devices.merge({self.device['id']:self.device})
         self.resolve()
         self.assertEqual(Upstream.requests,2)
+    def test_single_node_never_attempts_peer_connection(self):
+        settings = dict(self.settings, dns_ips=['8.8.8.8'])
+        hub.write(self.root/'shared/settings.json', json.dumps(settings))
+        hub.write(self.root/'node.json', json.dumps(dict(public_ip='8.8.8.8')))
+        with patch.object(devices, 'PeerConnection') as connection:
+            self.assertFalse(devices.sync_peer())
+            self.assertTrue(devices.sync_message())
+            connection.assert_not_called()
+        self.assertEqual(struct.unpack('!6H', self.resolve()[:12])[3], 1)
+
     def test_unknown_device_never_gets_unfiltered_dns(self):
         answer=self.resolve(token=secrets.token_hex(32))
         self.assertEqual(struct.unpack('!6H',answer[:12])[1]&15,5)

@@ -73,7 +73,9 @@ class PeerConnection(http.client.HTTPSConnection):
 def sync_peer():
     settings = hub.load(hub.ROOT / 'shared/settings.json')
     node = hub.load(hub.ROOT / 'node.json')
-    ip = next(x for x in settings['dns_ips'] if x != node['public_ip'])
+    ip = next((x for x in settings['dns_ips'] if x != node['public_ip']), None)
+    if ip is None:
+        return False
     conn = PeerConnection(settings['hostname'], ip)
     try:
         conn.request('POST', '/control', body=json.dumps(snapshot()).encode(),
@@ -83,13 +85,16 @@ def sync_peer():
         if response.status != 200 or len(data) > 2_000_000:
             raise RuntimeError('Peer rejected device synchronisation.')
         merge(json.loads(data))
+        return True
     finally:
         conn.close()
 
 def sync_message():
     try:
-        sync_peer()
-        print('Device registry confirmed on both VPSs.')
+        if sync_peer():
+            print('Device registry confirmed on both VPSs.')
+        else:
+            print('Applied on this VPS. Single-VPS mode; no failover configured.')
         return True
     except (OSError, ValueError, RuntimeError, http.client.HTTPException) as error:
         print('Applied locally. The other VPS could not be confirmed: ' + str(error))

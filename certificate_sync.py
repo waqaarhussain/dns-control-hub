@@ -37,6 +37,9 @@ def send():
     if marker.exists() and marker.read_text() == fingerprint:
         return
     hub.pairing_bundle()
+    if len(settings['dns_ips']) == 1:
+        hub.write(marker, fingerprint)
+        return
     conn = devices.PeerConnection(settings['hostname'], settings['dns_ips'][1])
     try:
         conn.request('POST','/control/certificate',body=json.dumps(bundle).encode(),headers={'Authorization':'Bearer '+settings['management_key'],'Content-Type':'application/json'})

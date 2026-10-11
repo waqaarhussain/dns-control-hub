@@ -1,10 +1,10 @@
 # DNS Control Hub
 
-Two private DNS VPSs with matching adult/gambling/ads/malware filtering, YouTube SNI redirects to **45.88.89.23**, per-device Apple profiles, HTTPS block pages, and root-only device helpers.
+One or two private DNS VPSs with matching adult/gambling/ads/malware filtering, YouTube SNI redirects to **45.88.89.23**, per-device Apple profiles, HTTPS block pages, and root-only device helpers.
 
 ## Install
 
-Requires two fresh **Ubuntu 24.04 or Debian 12/13** VPSs with public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and admin access are not published. Outbound DNS and HTTPS must be permitted.
+Requires one fresh **Ubuntu 24.04 or Debian 12/13** VPS for testing, or two for DNS redundancy. Each VPS needs with public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and admin access are not published. Outbound DNS and HTTPS must be permitted.
 
 **Certificate prerequisite:** enter any DNS hostname at install, either a domain you own or a provider-supplied hostname that permits public certificate issuance. Its A record must point only to VPS 1; remove an AAAA record unless it also reaches VPS 1. Keep TCP 80 reachable for certificate validation and renewal. No Netcup account or DNS API credentials are required. VPS 2 uses the same hostname/certificate through the explicit IP addresses in device profiles.
 
@@ -14,9 +14,11 @@ Run on VPS 1:
 curl -fsSL https://raw.githubusercontent.com/waqaarhussain/dns-control-hub/main/install.sh | sudo bash
 ```
 
-The installer prompts for both DNS VPS IPv4 addresses, your DNS hostname, certificate email and this node's IP. Albania's IP is hardcoded. The certificate email is saved privately on the VPS.
+The installer prompts for the first DNS VPS IPv4 address, an optional second address, your DNS hostname, certificate email and this node's IP. Albania's IP is hardcoded. The certificate email is saved privately on the VPS.
 
-Transfer `/opt/dns-control-hub/exports/dns-pairing.tar.gz` privately from VPS 1 to `/root/dns-pairing.tar.gz` on VPS 2 using SCP/SFTP. Run the same installer on VPS 2 and enter that pairing file path. It preserves the shared block-page CA and device management identity. The bundle includes the public TLS certificate and its private key. VPS 1 renews it and securely replicates updates to VPS 2. New profile downloads require VPS 1 because the hostname points there; already-installed DNS profiles can use either IP.
+**For a one-VPS test, leave the second IP blank.** Profiles contain only that VPS address, helpers act locally and no peer connections are attempted. There is no DNS redundancy.
+
+For a two-VPS setup, transfer `/opt/dns-control-hub/exports/dns-pairing.tar.gz` privately from VPS 1 to `/root/dns-pairing.tar.gz` on VPS 2 using SCP/SFTP. Run the same installer on VPS 2 and enter that pairing file path. It preserves the shared block-page CA and device management identity. The bundle includes the public TLS certificate and its private key. VPS 1 renews it and securely replicates updates to VPS 2. New profile downloads require VPS 1 because the hostname points there; already-installed DNS profiles can use either IP.
 
 Open TCP 80/443 in your provider firewall. The installer does not change a host firewall or SSH settings. Installation stops on failed DNS/TLS checks. Do not enable new profiles until both nodes pass and you test device switching.
 
@@ -99,7 +101,7 @@ Open `http://localhost:5380`; username `admin`. On the VPS, retrieve the generat
 
 ## Validation and failure tests
 
-Local tests cover certificate hostname/key validation and renewal retry safety, profile/CA pairing, device isolation, DoH GET/POST, all-record-type blocking, unblock, unknown-token rejection, protected control requests, stale state not undoing a block, and malformed packets. They exercise a real local HTTP gateway with a test upstream. No live VPS, production ACME issuance, Albania proxy or physical Apple device was available during development.
+Local tests cover single-VPS setup and operation, certificate hostname/key validation and renewal retry safety, profile/CA pairing, device isolation, DoH GET/POST, all-record-type blocking, unblock, unknown-token rejection, protected control requests, stale state not undoing a block, and malformed packets. They exercise a real local HTTP gateway with a test upstream. No live VPS, production ACME issuance, Albania proxy or physical Apple device was available during development.
 
 Installation validates publicly trusted DoH TLS, an ordinary DNS answer, YouTube A redirection, a deterministic blocked domain and the HTTPS block page with the private CA. After installing both nodes:
 

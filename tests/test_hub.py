@@ -78,6 +78,16 @@ class HubTests(unittest.TestCase):
             self.assertTrue(all(a['ipAddress'] == '45.88.89.23' and a['type'] == 'A' for a in records))
             self.assertTrue(any(a['domain'] == '*.googlevideo.com' for a in records))
 
+    def test_single_node_setup_and_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(hub, 'ROOT', root), patch.object(hub.socket, 'socket'), patch.object(hub, 'ask', side_effect=['', '8.8.8.8', '', 'dns.example.com', 'admin@example.com', '8.8.8.8']):
+                hub.setup()
+                settings = hub.load(root/'shared/settings.json')
+                self.assertEqual(settings['dns_ips'], ['8.8.8.8'])
+                config = plistlib.loads(hub.profile(settings, (root/'shared/ca.der').read_bytes()))
+                self.assertEqual(config['PayloadContent'][1]['DNSSettings']['ServerAddresses'], ['8.8.8.8'])
+
     def test_invalid_addresses_rejected(self):
         for addr in ['127.0.0.1', '192.168.1.5', '::1', 'not-an-ip']:
             with self.assertRaises(ValueError):

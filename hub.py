@@ -106,11 +106,14 @@ def setup():
         settings['dns_ips'] = [ipv4(x) for x in settings['dns_ips']]
         settings['proxy_ip'] = ALBANIA_IP
         settings['hostname'] = hostname(settings['hostname'])
-        if len(settings['dns_ips']) != 2 or len(settings['endpoint_key']) != 64 or not all(c in '0123456789abcdef' for c in settings['endpoint_key']):
+        if len(settings['dns_ips']) not in (1, 2) or len(settings['endpoint_key']) != 64 or not all(c in '0123456789abcdef' for c in settings['endpoint_key']):
             raise ValueError('Invalid shared settings.')
     else:
-        ips = [ipv4(ask('First DNS VPS public IPv4')), ipv4(ask('Second DNS VPS public IPv4'))]
-        if ips[0] == ips[1]:
+        ips = [ipv4(ask('First DNS VPS public IPv4'))]
+        second_ip = ask('Second DNS VPS public IPv4, or Enter to use one VPS')
+        if second_ip:
+            ips.append(ipv4(second_ip))
+        if len(ips) == 2 and ips[0] == ips[1]:
             raise ValueError('DNS VPS IP addresses must differ.')
         settings = {'dns_ips': ips, 'proxy_ip': ALBANIA_IP,
                     'hostname': hostname(ask('DNS hostname pointing to the FIRST DNS VPS (any provider)')),
