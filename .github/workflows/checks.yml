@@ -10,6 +10,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python -m pip install cryptography==50.0.1
       - run: python -m unittest discover -s tests
-      - run: bash -n install.sh compose.sh reload-tls.sh
-      - run: python -m py_compile hub.py devices.py gateway.py certificate_sync.py profiles.py
+      - run: bash -n install.sh update-live.sh compose.sh reload-tls.sh
+      - run: python -m py_compile hub.py devices.py gateway.py certificate_sync.py profiles.py admin.py stack.py blockserver.py
+      - run: node --check web/app.js
+  docker-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DNS_HUB_ROOT: /tmp/dns-hub-integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==50.0.1
+      - run: python tests/integration.py prepare
+      - run: ./compose.sh -f "$DNS_HUB_ROOT/compose.yaml" build
+      - run: ./compose.sh -f "$DNS_HUB_ROOT/compose.yaml" run --rm --no-deps dns unbound-checkconf /etc/unbound/hub.conf
+      - run: ./compose.sh -f "$DNS_HUB_ROOT/compose.yaml" up -d
+      - run: python tests/integration.py check
+      - run: npm install --no-save --ignore-scripts playwright
+      - run: node tests/browser.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dashboard-previews
+          path: artifacts/*.png
+      - if: failure()
+        run: ./compose.sh -f "$DNS_HUB_ROOT/compose.yaml" logs --tail 80
+      - if: always()
+        run: ./compose.sh -f "$DNS_HUB_ROOT/compose.yaml" down

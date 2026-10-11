@@ -45,24 +45,10 @@ set -Eeuo pipefail
 [[ $EUID == 0 ]] || { echo 'Run sudo update-live'; exit 1; }
 cd /opt/dns-control-hub/source
 git pull --ff-only
-python3 devices.py helpers
-python3 hub.py render
-/opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml up -d
-python3 hub.py console
-python3 hub.py render
-/opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml restart api doh gateway
-python3 hub.py apply
-python3 hub.py check
+exec bash /opt/dns-control-hub/source/update-live.sh --no-pull
 SCRIPT
 chmod 755 /usr/local/bin/update-live
-python3 "$BASE/source/hub.py" render
-"$BASE/source/compose.sh" -f "$BASE/compose.yaml" up -d
-python3 "$BASE/source/hub.py" console
-python3 "$BASE/source/hub.py" render
-"$BASE/source/compose.sh" -f "$BASE/compose.yaml" exec -T doh nginx -t
-"$BASE/source/compose.sh" -f "$BASE/compose.yaml" exec -T doh nginx -s reload
-python3 "$BASE/source/hub.py" apply
-python3 "$BASE/source/hub.py" check
+bash "$BASE/source/update-live.sh" --no-pull
 cat > /etc/systemd/system/dns-hub-youtube.service <<'UNIT'
 [Unit]
 Description=Refresh maintained YouTube DNS service catalogue
@@ -99,8 +85,24 @@ OnUnitActiveSec=60
 [Install]
 WantedBy=timers.target
 UNIT
+cat > /etc/systemd/system/dns-hub-device-exports.service <<'UNIT'
+[Unit]
+Description=Export dashboard device profiles into private root folders
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/dns-control-hub/source/devices.py export-pending
+UNIT
+cat > /etc/systemd/system/dns-hub-device-exports.timer <<'UNIT'
+[Unit]
+Description=Save new device configurations created in the dashboard
+[Timer]
+OnBootSec=20
+OnUnitActiveSec=30
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
-systemctl enable --now dns-hub-youtube.timer dns-hub-certificate-sync.timer
+systemctl enable --now dns-hub-youtube.timer dns-hub-certificate-sync.timer dns-hub-device-exports.timer
 printf '\nReady. Run sudo new to create a device profile.\n'
 python3 -c 'import json; print("Admin dashboard: https://" + json.load(open("/opt/dns-control-hub/shared/settings.json"))["hostname"] + "/ (username admin)")'
 printf 'Pairing bundle: %s/exports/dns-pairing.tar.gz. Keep it private.\n' "$BASE"

@@ -15,8 +15,36 @@ import devices
 import hub
 import profiles
 import ipaddress
+import socket
+import admin
 
 MAX_DNS = 65535
+
+def upstream_answer(packet):
+    address=os.environ.get('DNS_HUB_RESOLVER')
+    if address:
+        host,port=address.rsplit(':',1)
+        with socket.create_connection((host,int(port)),timeout=8) as connection:
+            connection.sendall(struct.pack('!H',len(packet))+packet)
+            def receive(size):
+                result=b''
+                while len(result)<size:
+                    chunk=connection.recv(size-len(result))
+                    if not chunk: raise OSError('Resolver closed the connection.')
+                    result+=chunk
+                return result
+            size=struct.unpack('!H',receive(2))[0]
+            if not 12<=size<=MAX_DNS: raise ValueError('Invalid resolver answer size.')
+            return receive(size)
+    upstream=os.environ.get('DNS_HUB_UPSTREAM','http://dns:8053/dns-query')
+    request=urllib.request.Request(upstream,data=packet,headers={'Content-Type':'application/dns-message'})
+    with urllib.request.urlopen(request,timeout=8) as response:
+        return response.read(MAX_DNS)
+
+def route_matches(domain):
+    path=hub.ROOT/'control/routing.json'
+    routes=hub.load(path) if path.exists() else hub.load(hub.SOURCE/'policy.json')['youtube_domains']
+    return any(name in routes for name in profiles.ancestors(domain))
 
 def read_name(packet, offset):
     labels, seen, end = [], set(), None
@@ -144,8 +172,9 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self):
         try:
             parsed = urllib.parse.urlsplit(self.path)
+            if admin.route(self,parsed): return
             settings = hub.load(hub.ROOT / 'shared/settings.json')
-            if parsed.path in ('/control', '/control/certificate', '/control/policy'):
+            if parsed.path in ('/control', '/control/certificate', '/control/policy', '/control/appearance'):
                 expected = 'Bearer ' + settings['management_key']
                 if self.command != 'POST' or not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
                     return self.reply(403)
@@ -163,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == '/control/policy':
                     merged = profiles.merge(json.loads(self.body(2_000_000)))
                     return self.reply(200, json.dumps(merged).encode(), 'application/json')
+                if parsed.path == '/control/appearance':
+                    merged=admin.merge_appearance(json.loads(self.body(10000)))
+                    return self.reply(200,json.dumps(merged).encode(),'application/json')
                 merged = devices.merge(json.loads(self.body(2_000_000)))
                 return self.reply(200, json.dumps(merged).encode(), 'application/json')
             download = re.fullmatch(r'/profiles/([0-9a-f]{64})/dns.mobileconfig', parsed.path)
@@ -198,13 +230,14 @@ class Handler(BaseHTTPRequestHandler):
                 if profile is not None and profiles.blocked(domain, profile):
                     ip = hub.load(hub.ROOT / 'node.json')['public_ip']
                     return self.reply(200, site_answer(packet, ip), 'application/dns-message')
+                if domain == hub.blocking_probe(settings):
+                    return self.reply(200, site_answer(packet, hub.load(hub.ROOT/'node.json')['public_ip']), 'application/dns-message')
+                if route_matches(domain):
+                    return self.reply(200, site_answer(packet, hub.ALBANIA_IP), 'application/dns-message')
             except (OSError, ValueError):
                 return self.reply(200, refuse(packet, 2), 'application/dns-message')
-            upstream = os.environ.get('DNS_HUB_UPSTREAM', 'http://dns:8053/dns-query')
-            req = urllib.request.Request(upstream, data=packet, headers={'Content-Type': 'application/dns-message'})
             try:
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    answer = response.read(MAX_DNS)
+                answer = upstream_answer(packet)
                 answer, denied = filter_answer(answer, packet, profile)
                 if denied:
                     answer = site_answer(packet, hub.load(hub.ROOT / 'node.json')['public_ip'])

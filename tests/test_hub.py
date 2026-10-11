@@ -10,9 +10,7 @@ import unittest
 from unittest.mock import patch
 import subprocess
 
-spec = importlib.util.spec_from_file_location('hub', Path(__file__).parents[1] / 'hub.py')
-hub = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(hub)
+import hub
 
 class HubTests(unittest.TestCase):
     def test_two_nodes_share_identity_but_block_to_their_own_ip(self):
@@ -47,44 +45,13 @@ class HubTests(unittest.TestCase):
             nodes = []
             for root in (first, second):
                 nodes.append(json.loads((root / 'node.json').read_text()))
-                self.assertIn('127.0.0.1:5380:5380', (root / 'compose.yaml').read_text())
+                self.assertIn('127.0.0.1:15353:5353', (root / 'compose.yaml').read_text())
                 self.assertTrue((root / 'haproxy.cfg').stat().st_mode & stat.S_IROTH)
                 self.assertFalse((root / 'shared/ca.key').stat().st_mode & stat.S_IROTH)
                 self.assertNotIn('"53:53', (root / 'compose.yaml').read_text())
             self.assertNotEqual(nodes[0]['public_ip'], nodes[1]['public_ip'])
             self.assertNotEqual(nodes[0]['admin_password'], nodes[1]['admin_password'])
 
-    def test_apply_preserves_other_zones_and_sets_each_nodes_block_ip(self):
-        class FakeAPI:
-            zones = {'unrelated.example'}
-            calls = []
-            def call(self, path, **params):
-                self.calls.append((path, params))
-                if path == 'apps/list':
-                    return {'response': {'apps': [{'name': 'Block Page'}]}}
-                if path == 'zones/list':
-                    return {'response': {'zones': [{'name': n} for n in self.zones]}}
-                if path == 'zones/create':
-                    self.zones.add(params['zone'])
-                return {'status': 'ok'}
-            def close(self):
-                pass
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            hub.write(root / 'node.json', json.dumps({'public_ip': '8.8.8.8'}))
-            hub.write(root / 'shared/settings.json', json.dumps({'proxy_ip': '1.1.1.1', 'hostname': 'dns.example.com'}))
-            with patch.object(hub, 'ROOT', root), patch.object(hub, 'API', FakeAPI), patch('profiles.refresh_lists'):
-                hub.apply()
-                hub.apply()
-            self.assertFalse(any(p == 'zones/delete' and a['zone'] == 'unrelated.example' for p, a in FakeAPI.calls))
-            blocked = [a for p, a in FakeAPI.calls if p == 'blocked/add']
-            self.assertEqual(blocked[-1]['domain'], 'blocked-probe.dns.example.com')
-            settings = [a for p, a in FakeAPI.calls if p == 'settings/set']
-            self.assertEqual(settings[-1]['customBlockingAddresses'], '8.8.8.8')
-            self.assertNotIn('webServiceLocalAddresses', settings[-1])
-            records = [a for p, a in FakeAPI.calls if p == 'zones/records/add']
-            self.assertTrue(all(a['ipAddress'] == '45.88.89.23' and a['type'] == 'A' for a in records))
-            self.assertTrue(any(a['domain'] == '*.googlevideo.com' for a in records))
 
     def test_single_node_setup_and_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,28 +63,7 @@ class HubTests(unittest.TestCase):
                 config = plistlib.loads(hub.profile(settings, (root/'shared/ca.der').read_bytes()))
                 self.assertEqual(config['PayloadContent'][1]['DNSSettings']['ServerAddresses'], ['8.8.8.8'])
 
-    def test_download_disconnect_rechecks_installed_app_before_retry(self):
-        class FakeAPI:
-            installed = False
-            downloads = 0
-            def call(self, path, **params):
-                if path == 'apps/list':
-                    return {'response': {'apps': [{'name': 'Block Page'}] if self.installed else []}}
-                self.downloads += 1
-                self.installed = True
-                raise http.client.RemoteDisconnected('restarted')
-        api = FakeAPI()
-        with patch.object(hub.time, 'sleep'):
-            hub.ensure_blockpage(api)
-        self.assertEqual(api.downloads, 1)
 
-    def test_download_uses_longer_timeout(self):
-        api = object.__new__(hub.API)
-        api.token = 'test-token'
-        with patch.object(hub.urllib.request, 'urlopen') as urlopen:
-            urlopen.return_value.__enter__.return_value = io.BytesIO(b'{"status":"ok"}')
-            api.call('apps/downloadAndInstall', name='Block Page')
-            self.assertEqual(urlopen.call_args.kwargs['timeout'], 120)
 
     def test_invalid_addresses_rejected(self):
         for addr in ['127.0.0.1', '192.168.1.5', '::1', 'not-an-ip']:

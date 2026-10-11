@@ -8,3 +8,7 @@ __pycache__/
 *.tar.gz
 state/
 exports/
+
+node_modules/
+package-lock.json
+artifacts/

@@ -99,6 +99,13 @@ def sync_peer():
             if response.status != 200 or len(data) > 2_000_000:
                 raise RuntimeError('Peer rejected profile policy synchronisation. Upgrade both VPSs.')
             profiles.merge(json.loads(data))
+        appearance=hub.ROOT/'control/appearance.json'
+        if appearance.exists():
+            conn.request('POST','/control/appearance',body=appearance.read_bytes(),headers={'Authorization':'Bearer '+settings['management_key'],'Content-Type':'application/json'})
+            response=conn.getresponse();data=response.read(10000)
+            if response.status!=200: raise RuntimeError('Peer rejected block-page settings.')
+            import admin
+            admin.merge_appearance(json.loads(data))
         return True
     finally:
         conn.close()
@@ -134,22 +141,38 @@ def new():
         raise ValueError('Choose 1, 2, 3 or 4.')
     import profiles
     profile = profiles.choose()[0]
-    directory = EXPORT_ROOT / slug
-    if directory.exists():
-        raise ValueError('Folder already exists: ' + str(directory) + '. Choose another device name.')
-    with locked():
-        data = registry_unlocked()
-        if any(d['slug'] == slug for d in data.values()):
-            raise ValueError('That device name is already registered.')
-        device = dict(id=secrets.token_hex(32), name=name, slug=slug, type=kind, token=secrets.token_hex(32),
-                      download_token=secrets.token_hex(32), blocked=False, profile=profile, revision=time.time_ns())
-        data[device['id']] = device
-        save(data)
-    export_device(device)
+    create_device(name, kind, profile)
     sync_message()
-    print('Files saved in ' + str(directory) + '. No terminal QR code.')
+    print('Files saved in ' + str(EXPORT_ROOT / slug) + '. No terminal QR code.')
     if kind == 'tvOS':
         print('Apple TV profile URL is in install-url.txt. This profile method is experimental on current tvOS; test it before relying on it.')
+
+def create_device(name, kind, profile, export=True):
+    import profiles
+    if not isinstance(name,str) or not 1 <= len(name) <= 80:
+        raise ValueError('Device name must be 1 to 80 characters.')
+    slug=re.sub(r'[^a-z0-9_-]+','-',name.lower()).strip('-_')[:64]
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}',slug) or kind not in ('iOS','iPadOS','tvOS','macOS'):
+        raise ValueError('Invalid device name or type.')
+    if profile not in profiles.ensure()['profiles']: raise ValueError('Unknown profile.')
+    directory=EXPORT_ROOT/slug
+    if export and directory.exists(): raise ValueError('Folder already exists. Choose another device name.')
+    with locked():
+        data=registry_unlocked()
+        if any(d['slug']==slug for d in data.values()): raise ValueError('That device name is already registered.')
+        device=dict(id=secrets.token_hex(32),name=name,slug=slug,type=kind,token=secrets.token_hex(32),download_token=secrets.token_hex(32),blocked=False,profile=profile,revision=time.time_ns())
+        data[device['id']]=device;save(data)
+    if export: export_device(device)
+    return device
+
+def export_pending():
+    for device in snapshot().values():
+        directory=EXPORT_ROOT/device['slug'];path=directory/'device.json'
+        if directory.exists():
+            if not path.exists() or hub.load(path).get('id')!=device['id']:
+                print('Skipping unrelated folder: '+str(directory));continue
+            if hub.load(path).get('revision')==device['revision']: continue
+        export_device(device)
 
 def export_device(device):
     directory = EXPORT_ROOT / device['slug']
@@ -208,7 +231,7 @@ if __name__ == '__main__':
         raise SystemExit('Run this helper as root, e.g. sudo new.')
     settings = hub.load(hub.ROOT / 'shared/settings.json')
     node = hub.load(hub.ROOT / 'node.json')
-    if sys.argv[1] not in ('sync', 'helpers') and node['public_ip'] != settings['dns_ips'][0]:
+    if sys.argv[1] not in ('sync', 'helpers', 'export-pending') and node['public_ip'] != settings['dns_ips'][0]:
         raise SystemExit('Run device helpers on the first DNS VPS: ' + settings['dns_ips'][0] + '. It is the device registry controller.')
     try:
         if sys.argv[1] == 'new':
@@ -228,6 +251,8 @@ if __name__ == '__main__':
         elif sys.argv[1] == 'profiles':
             import profiles
             profiles.manage()
+        elif sys.argv[1] == 'export-pending':
+            export_pending()
         elif sys.argv[1] == 'helpers':
             helpers()
         elif sys.argv[1] == 'sync':

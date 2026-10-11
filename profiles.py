@@ -135,7 +135,7 @@ def merge(incoming):
         return current
 
 
-def edit(change):
+def edit(change, sync=True):
     ensure()
     with devices.locked():
         path = hub.ROOT / 'control/profiles.json'
@@ -144,7 +144,7 @@ def edit(change):
         data['revision'] = max(time.time_ns(), data['revision'] + 1)
         validate(data)
         atomic(path, data)
-    devices.sync_message()
+    if sync: devices.sync_message()
 
 
 def choose(all_profiles=False):
