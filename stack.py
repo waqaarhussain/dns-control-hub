@@ -9,6 +9,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import time
 import hub
 import profiles
 
@@ -209,13 +210,34 @@ def console():
     import admin
     admin.setup()
 
+def wait_ready(host, timeout=60):
+    # Docker's Started state does not mean the TLS backends are accepting traffic.
+    deadline=time.monotonic()+timeout
+    last='No response.'
+    print('Waiting for verified HTTPS dashboard readiness...',flush=True)
+    while time.monotonic()<deadline:
+        result=subprocess.run(['curl','--fail','--silent','--show-error','--max-time','3',
+            '--connect-to',host+':443:127.0.0.1:443','https://'+host+'/'],capture_output=True)
+        if result.returncode==0 and b'DNS Control Hub' in result.stdout:
+            print('HTTPS dashboard ready.',flush=True)
+            return
+        last=result.stderr.decode(errors='replace').strip() or 'Dashboard has not started yet.'
+        if result.returncode not in (0,7,22,28,35,52,55,56):
+            raise RuntimeError('HTTPS readiness failed: '+last)
+        time.sleep(2)
+    raise RuntimeError('HTTPS dashboard did not become ready within '+str(timeout)+' seconds: '+last+'. Check doh and gateway container logs.')
+
 
 def check():
     shared=hub.load(hub.ROOT/'shared/settings.json')
     host=shared['hostname']; key=shared['endpoint_key']
+    wait_ready(host)
     for name,expected in [('example.com',None),('www.youtube.com',hub.ALBANIA_IP),(hub.blocking_probe(shared),hub.load(hub.ROOT/'node.json')['public_ip'])]:
         query=base64.urlsafe_b64encode(hub.dns_query(name)).decode().rstrip('=')
-        answer=subprocess.check_output(['curl','--fail','--silent','--show-error','--max-time','20','--retry','10','--retry-connrefused','--retry-delay','2','--retry-max-time','60','--connect-to',host+':443:127.0.0.1:443','https://'+host+'/dns/'+key+'/dns-query?dns='+query])
+        try:
+            answer=subprocess.check_output(['curl','--fail','--silent','--show-error','--max-time','20','--retry','10','--retry-connrefused','--retry-delay','2','--retry-max-time','60','--connect-to',host+':443:127.0.0.1:443','https://'+host+'/dns/'+key+'/dns-query?dns='+query])
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError('DoH transport check failed for '+name+' (curl exit '+str(error.returncode)+'). Check doh, gateway and api container logs.') from None
         if len(answer)<12 or struct.unpack('!6H',answer[:12])[1]&15 or not struct.unpack('!6H',answer[:12])[3]:
             raise RuntimeError('DNS check failed for '+name)
         if expected and not answer.endswith(ipaddress.IPv4Address(expected).packed):
