@@ -72,11 +72,13 @@ class HubTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             hub.write(root / 'node.json', json.dumps({'public_ip': '8.8.8.8'}))
-            hub.write(root / 'shared/settings.json', json.dumps({'proxy_ip': '1.1.1.1'}))
+            hub.write(root / 'shared/settings.json', json.dumps({'proxy_ip': '1.1.1.1', 'hostname': 'dns.example.com'}))
             with patch.object(hub, 'ROOT', root), patch.object(hub, 'API', FakeAPI):
                 hub.apply()
                 hub.apply()
             self.assertFalse(any(p == 'zones/delete' and a['zone'] == 'unrelated.example' for p, a in FakeAPI.calls))
+            blocked = [a for p, a in FakeAPI.calls if p == 'blocked/add']
+            self.assertEqual(blocked[-1]['domain'], 'blocked-probe.dns.example.com')
             settings = [a for p, a in FakeAPI.calls if p == 'settings/set']
             self.assertEqual(settings[-1]['customBlockingAddresses'], '8.8.8.8')
             self.assertNotIn('webServiceLocalAddresses', settings[-1])

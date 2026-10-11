@@ -411,13 +411,18 @@ def _apply():
             # Primary zones intentionally have no AAAA or HTTPS records; those cannot bypass the proxy.
         write(previous_path, json.dumps(policy['youtube_domains']))
         # Deterministic blocked hostname for deployment checks, independent of list download timing.
-        api.call('blocked/add', domain='blocked.dns-hub.test')
+        api.call('blocked/add', domain=blocking_probe(shared))
         print('Filtering, YouTube redirects and block-page app configured.')
     finally:
         try:
             api.close()
         except (OSError, RuntimeError, http.client.HTTPException):
             print('API logout could not be confirmed; the session will expire automatically.', file=sys.stderr)
+
+def blocking_probe(settings):
+    # RFC 6761 .test/.invalid are authoritative local zones in Technitium,
+    # so their NXDOMAIN answers precede recursive blocked-zone policy.
+    return 'blocked-probe.' + settings['hostname']
 
 def dns_query(name):
     qname = b''.join(bytes([len(s)]) + s.encode() for s in name.split('.')) + b'\0'
@@ -437,15 +442,16 @@ def check():
     header = struct.unpack('!6H', output[:12])
     if header[0] != 4567 or header[1] & 15 or not header[3]:
         raise RuntimeError('Encrypted DNS did not return a successful answer.')
-    for domain, expected in [('www.youtube.com', ALBANIA_IP), ('blocked.dns-hub.test', load(ROOT / 'node.json')['public_ip'])]:
+    for domain, expected in [('www.youtube.com', ALBANIA_IP), (blocking_probe(shared), load(ROOT / 'node.json')['public_ip'])]:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(10)
             sock.sendto(dns_query(domain), ('127.0.0.1', 15353))
             answer = sock.recv(4096)
         if ipaddress.IPv4Address(expected).packed not in answer[12:]:
             raise RuntimeError('DNS response check failed for ' + domain)
+    probe = blocking_probe(shared)
     run('curl', '--fail', '--silent', '--show-error', '--max-time', '20', '--cacert', str(ROOT / 'shared/ca.crt'),
-        '--connect-to', 'blocked.dns-hub.test:443:127.0.0.1:443', 'https://blocked.dns-hub.test/')
+        '--connect-to', probe + ':443:127.0.0.1:443', 'https://' + probe + '/')
     print('Local checks passed: verified DoH, YouTube DNS rewrite, blocked DNS response and HTTPS block page.')
     print('Still test each public IP externally and test iPhone switching with one VPS stopped.')
 
