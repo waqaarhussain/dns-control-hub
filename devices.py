@@ -41,7 +41,9 @@ def save(data):
     os.replace(temporary, path)
 
 def valid_device(item):
-    return (isinstance(item, dict) and set(item) == {'id', 'name', 'slug', 'type', 'token', 'download_token', 'blocked', 'revision'}
+    fields = {'id', 'name', 'slug', 'type', 'token', 'download_token', 'blocked', 'revision'}
+    return (isinstance(item, dict) and set(item) in (fields, fields | {'profile'})
+            and ('profile' not in item or isinstance(item['profile'], str) and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', item['profile']))
             and isinstance(item['name'], str) and 0 < len(item['name']) <= 80
             and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', item['slug'])
             and item['type'] in ('iOS', 'iPadOS', 'tvOS', 'macOS')
@@ -85,6 +87,16 @@ def sync_peer():
         if response.status != 200 or len(data) > 2_000_000:
             raise RuntimeError('Peer rejected device synchronisation.')
         merge(json.loads(data))
+        import profiles
+        policy = profiles.snapshot()
+        if policy is not None:
+            conn.request('POST', '/control/policy', body=json.dumps(policy).encode(),
+                headers={'Authorization': 'Bearer ' + settings['management_key'], 'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            data = response.read(2_000_001)
+            if response.status != 200 or len(data) > 2_000_000:
+                raise RuntimeError('Peer rejected profile policy synchronisation. Upgrade both VPSs.')
+            profiles.merge(json.loads(data))
         return True
     finally:
         conn.close()
@@ -92,7 +104,7 @@ def sync_peer():
 def sync_message():
     try:
         if sync_peer():
-            print('Device registry confirmed on both VPSs.')
+            print('Devices and profile policy confirmed on both VPSs.')
         else:
             print('Applied on this VPS. Single-VPS mode; no failover configured.')
         return True
@@ -118,6 +130,8 @@ def new():
     kind = {'1': 'iOS', '2': 'iPadOS', '3': 'tvOS', '4': 'macOS'}.get(selection)
     if not kind:
         raise ValueError('Choose 1, 2, 3 or 4.')
+    import profiles
+    profile = profiles.choose()[0]
     directory = Path('/root') / slug
     if directory.exists():
         raise ValueError('Folder already exists: ' + str(directory) + '. Choose another device name.')
@@ -126,7 +140,7 @@ def new():
         if any(d['slug'] == slug for d in data.values()):
             raise ValueError('That device name is already registered.')
         device = dict(id=secrets.token_hex(32), name=name, slug=slug, type=kind, token=secrets.token_hex(32),
-                      download_token=secrets.token_hex(32), blocked=False, revision=time.time_ns())
+                      download_token=secrets.token_hex(32), blocked=False, profile=profile, revision=time.time_ns())
         data[device['id']] = device
         save(data)
     export_device(device)
@@ -147,7 +161,7 @@ def export_device(device):
     hub.write(directory / 'device.json', json.dumps(device, indent=2))
     hub.write(directory / 'README.txt', 'Install dns.mobileconfig, or use the link in install-url.txt.\nFor HTTPS block pages, trust the Private block-page CA on your device.\nThe URL is private. Never share it or upload these files to GitHub.\nApple TV: provider instructions describe General > Privacy, select Share Apple TV Analytics, press Play, then Add Profile. Menu availability varies by tvOS release and Apple does not document this DNS payload as tvOS-supported.\nBlocking refuses new DNS queries through this device token. Existing sessions and cached IP addresses can continue.\n')
 
-def set_blocked(blocked):
+def choose_device():
     try:
         sync_peer()
     except (OSError, ValueError, RuntimeError, http.client.HTTPException):
@@ -166,6 +180,10 @@ def set_blocked(blocked):
         if len(matches) != 1:
             raise ValueError('Device not found or name ambiguous.')
         item = matches[0]
+    return item
+
+def set_blocked(blocked):
+    item = choose_device()
     with locked():
         data = registry_unlocked()
         current = data[item['id']]
@@ -175,19 +193,41 @@ def set_blocked(blocked):
     sync_message()
     print(item['name'] + (': all new DNS queries through its profile are refused.' if blocked else ': DNS queries enabled.'))
 
+def helpers():
+    for name in ('new', 'block', 'unblock', 'profiles', 'block-site', 'unblock-site'):
+        path = Path('/usr/local/bin') / name
+        if path.exists() and 'dns-control-hub' not in path.read_text():
+            raise ValueError('An unrelated helper already exists: ' + str(path))
+        hub.write(path, '#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 /opt/dns-control-hub/source/devices.py ' + name + ' "$@"\n', mode=0o755)
+
 if __name__ == '__main__':
     import sys
     if os.geteuid() != 0:
         raise SystemExit('Run this helper as root, e.g. sudo new.')
     settings = hub.load(hub.ROOT / 'shared/settings.json')
     node = hub.load(hub.ROOT / 'node.json')
-    if sys.argv[1] in ('new', 'block', 'unblock') and node['public_ip'] != settings['dns_ips'][0]:
+    if sys.argv[1] not in ('sync', 'helpers') and node['public_ip'] != settings['dns_ips'][0]:
         raise SystemExit('Run device helpers on the first DNS VPS: ' + settings['dns_ips'][0] + '. It is the device registry controller.')
     try:
         if sys.argv[1] == 'new':
             new()
         elif sys.argv[1] in ('block', 'unblock'):
-            set_blocked(sys.argv[1] == 'block')
+            import profiles
+            action = sys.argv[2] if len(sys.argv) > 2 else hub.ask('Device or site')
+            if action.casefold() in ('device', '1'):
+                set_blocked(sys.argv[1] == 'block')
+            elif action.casefold() in ('site', '2'):
+                profiles.site_rule(sys.argv[1] == 'block')
+            else:
+                raise ValueError('Choose device or site.')
+        elif sys.argv[1] in ('block-site', 'unblock-site'):
+            import profiles
+            profiles.site_rule(sys.argv[1] == 'block-site')
+        elif sys.argv[1] == 'profiles':
+            import profiles
+            profiles.manage()
+        elif sys.argv[1] == 'helpers':
+            helpers()
         elif sys.argv[1] == 'sync':
             sync_peer()
     except (OSError, ValueError, RuntimeError) as error:

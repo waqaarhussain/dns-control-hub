@@ -38,25 +38,14 @@ fi
 if [[ -d /root/.acme.sh ]]; then chmod 700 /root/.acme.sh; fi
 systemctl enable --now cron
 python3 "$BASE/source/hub.py" certificates
-for helper in new block unblock; do
-  # Do not replace an unrelated existing user command.
-  if [[ -e /usr/local/bin/$helper ]] && ! grep -q dns-control-hub /usr/local/bin/"$helper"; then
-    echo "An unrelated $helper command exists. Rename it before installing." >&2
-    exit 1
-  fi
-  cat > /usr/local/bin/"$helper" <<SCRIPT
-#!/usr/bin/env bash
-set -Eeuo pipefail
-exec python3 /opt/dns-control-hub/source/devices.py $helper
-SCRIPT
-  chmod 755 /usr/local/bin/"$helper"
-done
+python3 "$BASE/source/devices.py" helpers
 cat > /usr/local/bin/update-live <<'SCRIPT'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [[ $EUID == 0 ]] || { echo 'Run sudo update-live'; exit 1; }
 cd /opt/dns-control-hub/source
 git pull --ff-only
+python3 devices.py helpers
 python3 hub.py render
 /opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml up -d
 python3 hub.py console

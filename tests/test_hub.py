@@ -73,7 +73,7 @@ class HubTests(unittest.TestCase):
             root = Path(tmp)
             hub.write(root / 'node.json', json.dumps({'public_ip': '8.8.8.8'}))
             hub.write(root / 'shared/settings.json', json.dumps({'proxy_ip': '1.1.1.1', 'hostname': 'dns.example.com'}))
-            with patch.object(hub, 'ROOT', root), patch.object(hub, 'API', FakeAPI):
+            with patch.object(hub, 'ROOT', root), patch.object(hub, 'API', FakeAPI), patch('profiles.refresh_lists'):
                 hub.apply()
                 hub.apply()
             self.assertFalse(any(p == 'zones/delete' and a['zone'] == 'unrelated.example' for p, a in FakeAPI.calls))

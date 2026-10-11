@@ -13,8 +13,94 @@ import urllib.parse
 import urllib.request
 import devices
 import hub
+import profiles
+import ipaddress
 
 MAX_DNS = 65535
+
+def read_name(packet, offset):
+    labels, seen, end = [], set(), None
+    while True:
+        if offset >= len(packet) or offset in seen or len(seen) > 128:
+            raise ValueError('Invalid DNS name compression.')
+        seen.add(offset)
+        length = packet[offset]
+        if length & 0xc0 == 0xc0:
+            if offset + 1 >= len(packet):
+                raise ValueError('Truncated DNS pointer.')
+            pointer = ((length & 0x3f) << 8) | packet[offset + 1]
+            if pointer >= offset:
+                raise ValueError('Invalid forward DNS pointer.')
+            if end is None:
+                end = offset + 2
+            offset = pointer
+            continue
+        if length > 63 or offset + 1 + length > len(packet):
+            raise ValueError('Invalid DNS label.')
+        offset += 1
+        if not length:
+            return '.'.join(labels).lower(), end if end is not None else offset
+        labels.append(packet[offset:offset + length].decode('ascii'))
+        offset += length
+        if sum(len(x) + 1 for x in labels) > 254:
+            raise ValueError('DNS name too long.')
+
+def question(packet):
+    domain, end = read_name(packet, 12)
+    if end + 4 > len(packet):
+        raise ValueError('Missing DNS question.')
+    qtype, qclass = struct.unpack('!HH', packet[end:end+4])
+    return domain, qtype, qclass
+
+def site_answer(packet, ip):
+    _, qtype, qclass = question(packet)
+    base = refuse(packet, 0)
+    if qclass != 1:
+        return refuse(packet)
+    if qtype == 1:
+        header = bytearray(base[:12])
+        header[6:8] = struct.pack('!H', 1)
+        return bytes(header) + base[12:] + b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + ipaddress.IPv4Address(ip).packed
+    if qtype in (28, 64, 65):
+        return base  # No IPv6 address or HTTPS/SVCB hint may bypass the block page.
+    return refuse(packet)
+
+def filter_answer(answer, request, profile):
+    if len(answer) < 12 or answer[:2] != request[:2]:
+        raise ValueError('Invalid upstream DNS response.')
+    _, flags, qd, an, ns, ar = struct.unpack('!6H', answer[:12])
+    if not flags & 0x8000 or qd != 1:
+        raise ValueError('Invalid upstream DNS response.')
+    domain, offset = read_name(answer, 12)
+    if offset + 4 > len(answer) or question(answer) != question(request):
+        raise ValueError('Upstream question mismatch.')
+    offset += 4
+    result = bytearray(answer)
+    denied = False
+    for index in range(an + ns + ar):
+        owner, offset = read_name(answer, offset)
+        if offset + 10 > len(answer):
+            raise ValueError('Truncated DNS record.')
+        kind, cls, ttl, length = struct.unpack('!HHIH', answer[offset:offset+10])
+        data = offset + 10
+        end = data + length
+        if end > len(answer):
+            raise ValueError('Truncated DNS record data.')
+        if kind != 41:  # OPT TTL is EDNS flags, not a cache lifetime.
+            result[offset+4:offset+8] = b'\0\0\0\0'
+        if profile is not None and cls == 1 and index < an:
+            if profiles.blocked(owner, profile):
+                denied = True
+            if kind in (5, 39):  # Inspect compressed CNAME and DNAME targets too.
+                target, target_end = read_name(answer, data)
+                if target_end != end:
+                    raise ValueError('Invalid DNS alias data.')
+                if profiles.blocked(target, profile):
+                    denied = True
+        offset = end
+    if offset != len(answer):
+        raise ValueError('Trailing upstream DNS data.')
+    return bytes(result), denied
 
 def refuse(packet, rcode=5):
     if len(packet) < 12:
@@ -59,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parsed = urllib.parse.urlsplit(self.path)
             settings = hub.load(hub.ROOT / 'shared/settings.json')
-            if parsed.path in ('/control', '/control/certificate'):
+            if parsed.path in ('/control', '/control/certificate', '/control/policy'):
                 expected = 'Bearer ' + settings['management_key']
                 if self.command != 'POST' or not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
                     return self.reply(403)
@@ -74,6 +160,9 @@ class Handler(BaseHTTPRequestHandler):
                         hub.write(temporary, json.dumps(bundle))
                         os.replace(temporary, pending)
                     return self.reply(200, b'{"staged":true}', 'application/json')
+                if parsed.path == '/control/policy':
+                    merged = profiles.merge(json.loads(self.body(2_000_000)))
+                    return self.reply(200, json.dumps(merged).encode(), 'application/json')
                 merged = devices.merge(json.loads(self.body(2_000_000)))
                 return self.reply(200, json.dumps(merged).encode(), 'application/json')
             download = re.fullmatch(r'/profiles/([0-9a-f]{64})/dns.mobileconfig', parsed.path)
@@ -103,12 +192,23 @@ class Handler(BaseHTTPRequestHandler):
                 health = hmac.compare_digest(match[1], settings['endpoint_key'])
                 if (not device and not health) or (device and device['blocked']):
                     return self.reply(200, refusal, 'application/dns-message')
+            domain, _, _ = question(packet)
+            try:
+                profile = profiles.for_device(device)
+                if profile is not None and profiles.blocked(domain, profile):
+                    ip = hub.load(hub.ROOT / 'node.json')['public_ip']
+                    return self.reply(200, site_answer(packet, ip), 'application/dns-message')
+            except (OSError, ValueError):
+                return self.reply(200, refuse(packet, 2), 'application/dns-message')
             upstream = os.environ.get('DNS_HUB_UPSTREAM', 'http://dns:8053/dns-query')
             req = urllib.request.Request(upstream, data=packet, headers={'Content-Type': 'application/dns-message'})
             try:
                 with urllib.request.urlopen(req, timeout=8) as response:
                     answer = response.read(MAX_DNS)
-            except OSError:
+                answer, denied = filter_answer(answer, packet, profile)
+                if denied:
+                    answer = site_answer(packet, hub.load(hub.ROOT / 'node.json')['public_ip'])
+            except (OSError, ValueError):
                 answer = refuse(packet, 2)  # SERVFAIL rather than bypassing filtering.
             return self.reply(200, answer, 'application/dns-message')
         except (ValueError, KeyError, json.JSONDecodeError):
@@ -124,6 +224,15 @@ def sync_loop():
             pass  # Helper commands report peer failures; background sync retries.
         time.sleep(30)
 
+def list_loop():
+    while True:
+        try:
+            profiles.refresh_lists()
+        except Exception as error:
+            print('Category refresh failed; existing lists retained: ' + str(error), flush=True)
+        time.sleep(3600)
+
 if __name__ == '__main__':
     threading.Thread(target=sync_loop, daemon=True).start()
+    threading.Thread(target=list_loop, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 8080), Handler).serve_forever()

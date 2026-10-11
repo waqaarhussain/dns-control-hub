@@ -89,19 +89,37 @@ HTTPS block pages use Technitium's Block Page app and the shared private CA, dyn
 
 ## Policy and dashboard
 
-Edit `policy.json` in GitHub for category selections or extra redirect domains. HaGeZi ads/malware, adult and gambling lists are enabled and downloaded by each node every 24 hours. Snapshots may differ briefly; category selections match. Run **`sudo update-live` on both VPSs** after repository changes. Dashboard edits are not automatically copied to the other node and may be overwritten by the repository policy.
+Profile policy is private runtime state, preserved across repository updates and daily refreshes. The defaults are:
+
+| Profile | Categories blocked |
+| --- | --- |
+| Default (existing devices) | Ads/malware, adult, gambling; preserves the old policy |
+| Adults | Ads/malware |
+| Kids | Ads/malware, adult, gambling |
+
+Existing device tokens and installed Apple configurations remain valid. Legacy devices without a profile assignment use Default. `sudo new` now asks which profile the device belongs to. Run `sudo profiles`, choose **4 Move device**, and assign each existing device to Adults or Kids. Changing membership takes effect on its next DNS query and requires no profile reinstall. The same profile is shared by all devices assigned to it.
+
+`sudo profiles` also shows profiles and members, creates named profiles, selects categories to block, and removes custom site rules. `sudo block` and `sudo unblock` both ask **device or site**. Device mode refuses/enables all new DNS queries for that device. Site mode asks for a domain or URL and a profile, including an **All profiles** option. Shortcuts are `sudo block site`, `sudo unblock site`, `sudo block-site`, and `sudo unblock-site`. A site rule applies to its hostname and subdomains; DNS cannot block a single URL path. Rules retain the hostname you enter, so `www.example.com` covers that hostname and its children, while `example.com` covers the whole domain.
+
+Unblocking a site creates an explicit allow exception to category filtering. The most specific custom domain rule wins, with allow winning an exact tie. Remove an exception through `profiles` to restore normal category filtering. CNAME/DNAME targets are checked too; an exception for one hostname does not automatically allow an unrelated blocked alias target.
+
+HaGeZi category files are downloaded over HTTPS, validated before atomic replacement, and refreshed after 24 hours with hourly retries. Failed downloads retain valid previous files. If an enabled list or assigned profile is missing, that profile fails closed with DNS SERVFAIL. Both VPSs share device membership and profile rules over the authenticated management endpoint, with background retries every 30 seconds. Each VPS independently downloads category files, so snapshots can briefly differ. Run commands on the first VPS; upgrade both VPSs for the policy sync endpoint.
+
+Filtering happens in the private token gateway before Technitium's resolver cache, including for answers with blocked DNS aliases. Returned DNS records have TTL zero, including block responses; EDNS flags remain intact. Policy changes affect the next DNS request without a cache flush. Existing application caches, devices ignoring TTL, and established connections cannot be revoked by DNS, so this is not an immediate network kill switch. Previously cached answers can remain until their old TTL expires. Technitium retains its upstream cache for performance; it cannot bypass the gateway's current policy.
+
+Technitium's global category URL field is intentionally empty after this upgrade. Categories are now selected per profile using the helpers. Adding entries to Technitium's global Blocked/Allowed tabs is a server-wide action and can interfere with profile exceptions. Use the profile site helpers for profile-specific rules. YouTube redirects remain shared by all profiles. Edit `policy.json` in GitHub for source URLs or extra redirect domains, then run `sudo update-live` on each VPS. Editing it does not reset existing profile categories.
 
 Open **https://YOUR_CONFIGURED_HOSTNAME/** for Technitium's browser login. On the first installation or upgrade enabling browser access, the installer requires you to choose and confirm a password of at least 12 characters. Username: **admin**. The console is not exposed until this step succeeds. HTTP requests redirect to HTTPS, while certificate challenges continue to work.
 
 You can subsequently change your password through Technitium's user menu. A private non-expiring API token named **DNS Control Hub automation** keeps policy updates working independently of your login password. Do not delete that token; it is stored only in `/opt/dns-control-hub/admin-api-token`, outside GitHub. Browser password changes do not update the initial password file; use your chosen current password. Both DNS VPSs have separate console accounts/tokens; the public hostname normally reaches VPS 1.
 
-Technitium manages DNS rules, blocklists, zones and statistics. The `new`/`block`/`unblock` device registry is separate and is still operated with the root helpers. Console policy edits are local to that server; repository-managed settings may be reapplied by updates and daily refreshes.
+Technitium manages resolver settings, zones, block-page certificates and statistics. Shared profiles, categories, site exceptions and device membership are managed with the root helpers, not through Technitium’s console. Console zone/settings edits are local to that server; repository-managed resolver settings may be reapplied by updates and daily refreshes.
 
 Public port 5380 remains closed. The HTTPS proxy exposes Technitium's own authenticated API and login page. Login requests are rate limited; unauthenticated protected API requests still require Technitium credentials. An optional SSH tunnel remains available: `ssh -L 5380:127.0.0.1:5380 root@YOUR_DNS_VPS_IP`, then http://localhost:5380.
 
 ## Validation and failure tests
 
-Local tests cover single-VPS setup and operation, certificate hostname/key validation and renewal retry safety, profile/CA pairing, device isolation, DoH GET/POST, all-record-type blocking, unblock, unknown-token rejection, protected control requests, stale state not undoing a block, and malformed packets. They exercise a real local HTTP gateway with a test upstream. No live VPS, production ACME issuance, Albania proxy or physical Apple device was available during development.
+Local tests cover single-VPS setup and operation, certificate hostname/key validation and renewal retry safety, profile/CA pairing, device isolation, DoH GET/POST, all-record-type blocking, unblock, unknown-token rejection, protected control requests, stale state not undoing a block, and malformed packets. They exercise a real local HTTP gateway with a test upstream, profile/category isolation, allow exceptions, legacy migration, membership changes without token replacement, authenticated policy sync, stale policy rejection, last-good list retention, missing-list failure, CNAME inspection, and TTL-zero responses preserving EDNS flags. No live VPS, production ACME issuance, Albania proxy or physical Apple device was available during development.
 
 Installation validates publicly trusted DoH TLS, an ordinary DNS answer, YouTube A redirection, a deterministic blocked domain and the HTTPS block page with the private CA. After installing both nodes:
 

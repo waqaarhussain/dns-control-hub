@@ -156,6 +156,8 @@ def pairing_bundle():
 
 
 def render():
+    import profiles
+    profiles.ensure()
     settings, node = load(ROOT / 'shared/settings.json'), load(ROOT / 'node.json')
     host = settings['hostname']
     write(ROOT / 'admin-password', node['admin_password'])
@@ -261,7 +263,7 @@ http {
     ssl_certificate_key /run/tls/key.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     client_max_body_size 2m;
-    location ~ ^/(dns/|profiles/|control(?:/certificate)?$) {
+    location ~ ^/(dns/|profiles/|control(?:/(?:certificate|policy))?$) {
       limit_req zone=dns burst=200 nodelay;
       set $backend api:8080;
       proxy_pass http://$backend;
@@ -426,6 +428,8 @@ def apply():
         _apply()
 
 def _apply():
+    import profiles
+    profiles.refresh_lists()
     policy = load(SOURCE / 'policy.json')
     refreshed = ROOT / 'youtube-domains.json'
     if refreshed.exists():
@@ -438,7 +442,8 @@ def _apply():
                  dnsReverseProxyNetworkACL='172.16.0.0/12,192.168.0.0/16,10.0.0.0/8',
                  recursion='AllowOnlyForPrivateNetworks', enableBlocking='true',
                  blockingType='CustomAddress', customBlockingAddresses=node['public_ip'],
-                 blockListUrls=','.join(policy['blocklists'][k] for k in policy['enabled_categories']),
+                 blockingAnswerTtl=0,
+                 blockListUrls='',
                  blockListUpdateIntervalHours=24, logQueries='false', dnssecValidation='true', dnsServerLocalEndPoints='0.0.0.0:53')
         ensure_blockpage(api)
         config = [{'name': 'private', 'enableWebServer': True, 'webServerLocalAddresses': ['0.0.0.0'],
@@ -469,7 +474,8 @@ def _apply():
         write(previous_path, json.dumps(policy['youtube_domains']))
         # Deterministic blocked hostname for deployment checks, independent of list download timing.
         api.call('blocked/add', domain=blocking_probe(shared))
-        print('Filtering, YouTube redirects and block-page app configured.')
+        api.call('cache/flush')
+        print('Profile filtering, YouTube redirects and block-page app configured.')
     finally:
         try:
             api.close()
@@ -511,8 +517,27 @@ def check():
         '--connect-to', probe + ':443:127.0.0.1:443', 'https://' + probe + '/')
     if load(ROOT / 'node.json').get('console_ready'):
         check_console(host)
+    check_profile_filters(shared)
     print('Local checks passed: verified DoH, YouTube DNS rewrite, blocked DNS response and HTTPS block page.')
     print('Still test each public IP externally and test iPhone switching with one VPS stopped.')
+
+def check_profile_filters(shared):
+    import profiles
+    policy = profiles.for_device(None)
+    ip = ipaddress.IPv4Address(load(ROOT / 'node.json')['public_ip']).packed
+    for category in policy['categories']:
+        path = ROOT / 'control/category-lists' / (category + '.txt')
+        names = profiles.parse_list(path.read_text())
+        name = next((name for name in names if profiles.blocked(name, policy)), None)
+        if name is None:
+            continue  # All category members explicitly allowed in Default.
+        query = base64.urlsafe_b64encode(dns_query(name)).decode().rstrip('=')
+        answer = subprocess.check_output(['curl', '--fail', '--silent', '--show-error', '--max-time', '20',
+            '--connect-to', shared['hostname'] + ':443:127.0.0.1:443',
+            'https://' + shared['hostname'] + '/dns/' + shared['endpoint_key'] + '/dns-query?dns=' + query])
+        if len(answer) < 12 or struct.unpack('!6H', answer[:12])[3] != 1 or not answer.endswith(ip):
+            raise RuntimeError('Live profile category check failed: ' + category)
+    print('Profile gateway and enabled Default categories checked over HTTPS.')
 
 def check_console(host):
     base = ['curl', '--fail', '--silent', '--show-error', '--max-time', '20',
@@ -545,4 +570,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['setup', 'render', 'apply', 'check', 'certificates', 'refresh-youtube', 'console'])
     args = parser.parse_args()
+    if args.command == 'render' and os.geteuid() == 0:
+        import devices
+        devices.helpers()
     globals()[args.command.replace('-', '_')]()

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 import hub
 import devices
 import gateway
+import profiles
 
 class Upstream(BaseHTTPRequestHandler):
     requests = 0
@@ -42,6 +43,10 @@ class GatewayTests(unittest.TestCase):
         (self.root / 'shared/ca.der').write_bytes(b'public-certificate-test-fixture')
         self.device = dict(id=secrets.token_hex(32), name='Test iPhone', slug='test-iphone', type='iOS', token=secrets.token_hex(32), download_token=secrets.token_hex(32), blocked=False, revision=10)
         devices.merge({self.device['id']:self.device})
+        policy = profiles.ensure()
+        policy['revision'] = 2
+        policy['profiles']['default']['categories'] = []
+        profiles.merge(policy)
         Upstream.requests = 0
         self.upstream = ThreadingHTTPServer(('127.0.0.1',0), Upstream)
         self.server = ThreadingHTTPServer(('127.0.0.1',0), gateway.Handler)
