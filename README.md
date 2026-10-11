@@ -4,7 +4,7 @@ One or two private DNS VPSs with matching adult/gambling/ads/malware filtering, 
 
 ## Install
 
-Requires one fresh **Ubuntu 24.04 or Debian 12/13** VPS for testing, or two for DNS redundancy. Each VPS needs public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and admin access are not published. Outbound DNS and HTTPS must be permitted.
+Requires one fresh **Ubuntu 24.04 or Debian 12/13** VPS for testing, or two for DNS redundancy. Each VPS needs public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and direct port 5380 are not published; the admin console is available through HTTPS after password setup. Outbound DNS and HTTPS must be permitted.
 
 **Certificate prerequisite:** enter any DNS hostname at install, either a domain you own or a provider-supplied hostname that permits public certificate issuance. Its A record must point only to VPS 1; remove an AAAA record unless it also reaches VPS 1. Keep TCP 80 reachable for certificate validation and renewal. No Netcup account or DNS API credentials are required. VPS 2 uses the same hostname/certificate through the explicit IP addresses in device profiles.
 
@@ -91,13 +91,13 @@ HTTPS block pages use Technitium's Block Page app and the shared private CA, dyn
 
 Edit `policy.json` in GitHub for category selections or extra redirect domains. HaGeZi ads/malware, adult and gambling lists are enabled and downloaded by each node every 24 hours. Snapshots may differ briefly; category selections match. Run **`sudo update-live` on both VPSs** after repository changes. Dashboard edits are not automatically copied to the other node and may be overwritten by the repository policy.
 
-Admin dashboard is SSH-only:
+Open **https://YOUR_CONFIGURED_HOSTNAME/** for Technitium's browser login. On the first installation or upgrade enabling browser access, the installer requires you to choose and confirm a password of at least 12 characters. Username: **admin**. The console is not exposed until this step succeeds. HTTP requests redirect to HTTPS, while certificate challenges continue to work.
 
-```bash
-ssh -L 5380:127.0.0.1:5380 root@YOUR_DNS_VPS_IP
-```
+You can subsequently change your password through Technitium's user menu. A private non-expiring API token named **DNS Control Hub automation** keeps policy updates working independently of your login password. Do not delete that token; it is stored only in `/opt/dns-control-hub/admin-api-token`, outside GitHub. Browser password changes do not update the initial password file; use your chosen current password. Both DNS VPSs have separate console accounts/tokens; the public hostname normally reaches VPS 1.
 
-Open `http://localhost:5380`; username `admin`. On the VPS, retrieve the generated password using `sudo cat /opt/dns-control-hub/admin-password`. If you change it in the dashboard, update the private `node.json` password and password file before reapplying policy.
+Technitium manages DNS rules, blocklists, zones and statistics. The `new`/`block`/`unblock` device registry is separate and is still operated with the root helpers. Console policy edits are local to that server; repository-managed settings may be reapplied by updates and daily refreshes.
+
+Public port 5380 remains closed. The HTTPS proxy exposes Technitium's own authenticated API and login page. Login requests are rate limited; unauthenticated protected API requests still require Technitium credentials. An optional SSH tunnel remains available: `ssh -L 5380:127.0.0.1:5380 root@YOUR_DNS_VPS_IP`, then http://localhost:5380.
 
 ## Validation and failure tests
 
@@ -113,7 +113,7 @@ Installation validates publicly trusted DoH TLS, an ordinary DNS answer, YouTube
 
 Container commands: `sudo /opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml stop` and `up -d`. Disable the profile if deployment checks fail. A single Albania proxy remains a separate point of failure for redirected traffic.
 
-Back up `shared`, `tls`, `control`, `node.json`, `data`, root device folders and `/root/.acme.sh` privately. Pairing bundles and acme account files contain sensitive keys. Never commit runtime files to GitHub. The Technitium image is pinned at 15.6.1; upgrades require explicit validation.
+Back up `shared`, `tls`, `control`, `node.json`, `admin-api-token`, `data`, root device folders and `/root/.acme.sh` privately. Pairing bundles and acme account files contain sensitive keys. Never commit runtime files to GitHub. The Technitium image is pinned at 15.6.1; upgrades require explicit validation.
 
 ## Sources
 

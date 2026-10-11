@@ -213,17 +213,37 @@ def render():
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on: [dns, doh, api]
 ''')
+    console_locations = "location / { return 404; }"
+    if node.get('console_ready'):
+        console_proxy = """set $console dns:5380;
+      proxy_pass http://$console;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_read_timeout 180s;
+      add_header X-Content-Type-Options nosniff always;
+      add_header X-Frame-Options DENY always;"""
+        console_locations = """location = /api/user/login {
+      limit_req zone=console_login burst=5 nodelay;
+      limit_req_status 429;
+      """ + console_proxy + """
+    }
+    location / {
+      client_max_body_size 64m;
+      """ + console_proxy + """
+    }"""
     write(ROOT / 'nginx.conf', '''events {}
 http {
   access_log off;
   server_tokens off;
   limit_req_zone $binary_remote_addr zone=dns:10m rate=100r/s;
+  limit_req_zone $binary_remote_addr zone=console_login:10m rate=5r/m;
   resolver 127.0.0.11 valid=10s;
   server {
     listen 80;
     server_name HOSTNAME;
     location ^~ /.well-known/acme-challenge/ { root /run/acme; }
-    location / { return 404; }
+    location / { return 301 https://$host$request_uri; }
   }
   server {
     listen 80 default_server;
@@ -249,10 +269,10 @@ http {
       proxy_set_header X-Real-IP $remote_addr;
       proxy_read_timeout 15s;
     }
-    location / { return 404; }
+    CONSOLE_LOCATIONS
   }
 }
-'''.replace('HOSTNAME', host))
+'''.replace('HOSTNAME', host).replace('CONSOLE_LOCATIONS', console_locations))
     write(ROOT / 'haproxy.cfg', '''global
   maxconn 4096
 defaults
@@ -323,7 +343,12 @@ def certificates():
 
 
 class API:
-    def __init__(self):
+    def __init__(self, force_login=False):
+        token_path = ROOT / 'admin-api-token'
+        self.persistent = token_path.exists() and not force_login
+        if self.persistent:
+            self.token = token_path.read_text().strip()
+            return
         self.token = None
         password = load(ROOT / 'node.json')['admin_password']
         for attempt in range(60):
@@ -346,7 +371,39 @@ class API:
         return data
 
     def close(self):
-        self.call('user/logout')
+        if not getattr(self, 'persistent', False):
+            self.call('user/logout')
+
+def console():
+    node = load(ROOT / 'node.json')
+    if node.get('console_ready'):
+        if not (ROOT / 'admin-api-token').exists():
+            raise RuntimeError('Console automation token is missing. Restore it from your private backup.')
+        return
+    print('Choose your browser login password. Username: admin. Input is hidden.')
+    password = getpass.getpass('New console password (at least 12 characters): ')
+    confirmation = getpass.getpass('Confirm console password: ')
+    if len(password) < 12 or password != confirmation:
+        raise ValueError('Passwords must match and contain at least 12 characters.')
+    if password == node['admin_password']:
+        raise ValueError('Choose a different password.')
+    api = API(force_login=True)
+    try:
+        token_path = ROOT / 'admin-api-token'
+        if not token_path.exists():
+            token = api.call('user/createToken', tokenName='DNS Control Hub automation')['token']
+            write(token_path, token)
+        api.call('user/changePassword', **{'pass': node['admin_password'], 'newPass': password})
+        node['admin_password'] = password
+        node['console_ready'] = True
+        write(ROOT / 'node.json', json.dumps(node, indent=2))
+        write(ROOT / 'admin-password', password)
+    finally:
+        try:
+            api.close()
+        except (OSError, RuntimeError, http.client.HTTPException):
+            pass
+    print('Browser password saved. Future browser password changes do not affect the automation token.')
 
 def ensure_blockpage(api):
     # Check before each attempt: a disconnected response can still mean installation succeeded.
@@ -452,8 +509,20 @@ def check():
     probe = blocking_probe(shared)
     run('curl', '--fail', '--silent', '--show-error', '--max-time', '20', '--cacert', str(ROOT / 'shared/ca.crt'),
         '--connect-to', probe + ':443:127.0.0.1:443', 'https://' + probe + '/')
+    if load(ROOT / 'node.json').get('console_ready'):
+        check_console(host)
     print('Local checks passed: verified DoH, YouTube DNS rewrite, blocked DNS response and HTTPS block page.')
     print('Still test each public IP externally and test iPhone switching with one VPS stopped.')
+
+def check_console(host):
+    base = ['curl', '--fail', '--silent', '--show-error', '--max-time', '20',
+            '--connect-to', host + ':443:127.0.0.1:443']
+    subprocess.check_output(base + ['https://' + host + '/'])
+    # No bearer token: settings must remain protected by Technitium authentication.
+    result = json.loads(subprocess.check_output(base + ['https://' + host + '/api/settings/get']))
+    if result.get('status') not in ('invalid-token', 'error'):
+        raise RuntimeError('Console authentication check failed: anonymous settings access was not rejected.')
+    print('HTTPS console responds; anonymous settings access rejected.')
 
 def refresh_youtube():
     # Validate the maintained service-domain catalogue before touching working policy.
@@ -474,6 +543,6 @@ def refresh_youtube():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['setup', 'render', 'apply', 'check', 'certificates', 'refresh-youtube'])
+    parser.add_argument('command', choices=['setup', 'render', 'apply', 'check', 'certificates', 'refresh-youtube', 'console'])
     args = parser.parse_args()
     globals()[args.command.replace('-', '_')]()

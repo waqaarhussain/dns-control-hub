@@ -59,6 +59,8 @@ cd /opt/dns-control-hub/source
 git pull --ff-only
 python3 hub.py render
 /opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml up -d
+python3 hub.py console
+python3 hub.py render
 /opt/dns-control-hub/source/compose.sh -f /opt/dns-control-hub/compose.yaml restart api doh gateway
 python3 hub.py apply
 python3 hub.py check
@@ -66,6 +68,10 @@ SCRIPT
 chmod 755 /usr/local/bin/update-live
 python3 "$BASE/source/hub.py" render
 "$BASE/source/compose.sh" -f "$BASE/compose.yaml" up -d
+python3 "$BASE/source/hub.py" console
+python3 "$BASE/source/hub.py" render
+"$BASE/source/compose.sh" -f "$BASE/compose.yaml" exec -T doh nginx -t
+"$BASE/source/compose.sh" -f "$BASE/compose.yaml" exec -T doh nginx -s reload
 python3 "$BASE/source/hub.py" apply
 python3 "$BASE/source/hub.py" check
 cat > /etc/systemd/system/dns-hub-youtube.service <<'UNIT'
@@ -107,5 +113,5 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now dns-hub-youtube.timer dns-hub-certificate-sync.timer
 printf '\nReady. Run sudo new to create a device profile.\n'
-printf 'Admin dashboard: SSH tunnel to localhost:5380 (see README).\n'
+python3 -c 'import json; print("Admin dashboard: https://" + json.load(open("/opt/dns-control-hub/shared/settings.json"))["hostname"] + "/ (username admin)")'
 printf 'Pairing bundle: %s/exports/dns-pairing.tar.gz. Keep it private.\n' "$BASE"
