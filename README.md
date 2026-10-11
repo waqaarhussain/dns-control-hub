@@ -4,7 +4,7 @@ One or two private DNS VPSs with matching adult/gambling/ads/malware filtering, 
 
 ## Install
 
-Requires one fresh **Ubuntu 24.04 or Debian 12/13** VPS for testing, or two for DNS redundancy. Each VPS needs with public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and admin access are not published. Outbound DNS and HTTPS must be permitted.
+Requires one fresh **Ubuntu 24.04 or Debian 12/13** VPS for testing, or two for DNS redundancy. Each VPS needs public IPv4, Docker and ports TCP 80/443 available. Use different providers. Preserve SSH access. Public UDP/TCP 53 and admin access are not published. Outbound DNS and HTTPS must be permitted.
 
 **Certificate prerequisite:** enter any DNS hostname at install, either a domain you own or a provider-supplied hostname that permits public certificate issuance. Its A record must point only to VPS 1; remove an AAAA record unless it also reaches VPS 1. Keep TCP 80 reachable for certificate validation and renewal. No Netcup account or DNS API credentials are required. VPS 2 uses the same hostname/certificate through the explicit IP addresses in device profiles.
 

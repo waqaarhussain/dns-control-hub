@@ -39,10 +39,16 @@ def load(path):
     return json.loads(Path(path).read_text())
 
 def ask(prompt):
-    with open('/dev/tty', 'r+') as tty:
-        tty.write(prompt + ': ')
-        tty.flush()
-        return tty.readline().strip()
+    # Text update mode requires seeking, which a terminal cannot support.
+    # Separate streams also keep prompts working when stdin is a curl pipe.
+    with open('/dev/tty', 'w') as output:
+        output.write(prompt + ': ')
+        output.flush()
+    with open('/dev/tty', 'r') as input_stream:
+        answer = input_stream.readline()
+    if not answer:
+        raise RuntimeError('Terminal closed before an answer was entered.')
+    return answer.strip()
 
 def ipv4(value):
     addr = ipaddress.IPv4Address(value)
