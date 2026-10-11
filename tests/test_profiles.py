@@ -15,6 +15,20 @@ from test_gateway import GatewayTests, Upstream
 
 
 class ProfileRulesTests(unittest.TestCase):
+    def test_disk_backed_list_membership_matches_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'list.txt'
+            names = sorted({f'name{i}.example' for i in range(1000)} | {'a.example','z.example'})
+            path.write_text('\n'.join(names) + '\n')
+            lookup = profiles.DomainFile(path)
+            try:
+                for name in names:
+                    self.assertIn(name, lookup)
+                for name in ('0.example', 'aa.example', 'name1000.example', 'zz.example'):
+                    self.assertNotIn(name, lookup)
+            finally:
+                lookup.close()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -64,7 +78,7 @@ class ProfileRulesTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): profiles.refresh_lists(force=True)
     def test_new_device_selects_profile_and_exports_existing_token_shape(self):
         name = 'test-' + secrets.token_hex(8)
-        with patch.object(hub, 'ask', side_effect=[name, '1', 'kids']), patch.object(devices, 'sync_peer'), patch.object(devices, 'sync_message'), patch.object(devices, 'export_device') as export:
+        with patch.object(devices, 'EXPORT_ROOT', self.root / 'exports'), patch.object(hub, 'ask', side_effect=[name, '1', 'kids']), patch.object(devices, 'sync_peer'), patch.object(devices, 'sync_message'), patch.object(devices, 'export_device') as export:
             devices.new()
         item = export.call_args[0][0]
         self.assertTrue(devices.valid_device(item))
@@ -102,7 +116,7 @@ class ProfileGatewayTests(GatewayTests):
         for category in profiles.CATEGORIES:
             names = [f'{category}{i}.example' for i in range(100)]
             if category == 'gambling': names.append('bets.example')
-            (directory / (category + '.txt')).write_text('\n'.join(names))
+            (directory / (category + '.txt')).write_text('\n'.join(sorted(names)) + '\n')
         policy = profiles.snapshot()
         policy['revision'] = 5
         profiles.merge(policy)

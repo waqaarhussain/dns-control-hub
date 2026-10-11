@@ -15,6 +15,8 @@ import time
 from contextlib import contextmanager
 import hub
 
+EXPORT_ROOT = Path('/root')
+
 @contextmanager
 def locked():
     directory = hub.ROOT / 'control'
@@ -132,7 +134,7 @@ def new():
         raise ValueError('Choose 1, 2, 3 or 4.')
     import profiles
     profile = profiles.choose()[0]
-    directory = Path('/root') / slug
+    directory = EXPORT_ROOT / slug
     if directory.exists():
         raise ValueError('Folder already exists: ' + str(directory) + '. Choose another device name.')
     with locked():
@@ -150,7 +152,7 @@ def new():
         print('Apple TV profile URL is in install-url.txt. This profile method is experimental on current tvOS; test it before relying on it.')
 
 def export_device(device):
-    directory = Path('/root') / device['slug']
+    directory = EXPORT_ROOT / device['slug']
     directory.mkdir(mode=0o700, exist_ok=True)
     settings = hub.load(hub.ROOT / 'shared/settings.json')
     config = hub.profile(settings, (hub.ROOT / 'shared/ca.der').read_bytes(), device)

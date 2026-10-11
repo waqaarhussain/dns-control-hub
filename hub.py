@@ -366,8 +366,18 @@ class API:
             data=urllib.parse.urlencode(params).encode(), method='POST')
         if self.token:
             req.add_header('Authorization', 'Bearer ' + self.token)
-        with urllib.request.urlopen(req, timeout=120 if path == 'apps/downloadAndInstall' else 20) as response:
-            data = json.load(response)
+        for attempt in range(15):
+            try:
+                with urllib.request.urlopen(req, timeout=120 if path == 'apps/downloadAndInstall' else 20) as response:
+                    data = json.load(response)
+                break
+            except urllib.error.URLError as error:
+                # A refused TCP connection sent no request, so retrying cannot
+                # duplicate an API mutation. Other disconnects are not replayed.
+                if not isinstance(error.reason, ConnectionRefusedError) or attempt == 14:
+                    raise
+                print('Waiting for Technitium API to become available...', flush=True)
+                time.sleep(2)
         if data.get('status') != 'ok':
             raise RuntimeError('Technitium API ' + path + ': ' + str(data.get('errorMessage', data.get('status'))))
         return data
@@ -572,5 +582,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.command == 'render' and os.geteuid() == 0:
         import devices
+        import profiles
+        # Prepare filtering before the updater restarts the working gateway.
+        # This also repairs older update-live wrappers without replacing them.
+        profiles.refresh_lists()
         devices.helpers()
     globals()[args.command.replace('-', '_')]()

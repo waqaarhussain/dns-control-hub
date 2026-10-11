@@ -3,6 +3,7 @@
 import ipaddress
 import fcntl
 import json
+import mmap
 import os
 import re
 import threading
@@ -16,6 +17,33 @@ CATEGORIES = ('ads_malware', 'adult', 'gambling')
 LABELS = {'ads_malware': 'Ads / malware', 'adult': 'Adult content', 'gambling': 'Gambling'}
 _cache = {}
 _cache_lock = threading.Lock()
+
+class DomainFile:
+    """Binary search in sorted, validated list files without retaining Python sets."""
+    def __init__(self, path):
+        with path.open('rb') as source:
+            self.data = mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ)
+    def __contains__(self, domain):
+        target = domain.encode('ascii')
+        low, high = 0, len(self.data)
+        while low < high:
+            middle = (low + high) // 2
+            start = self.data.rfind(b'\n', low, middle) + 1
+            if start < low:
+                start = low
+            end = self.data.find(b'\n', middle)
+            if end < 0:
+                end = len(self.data)
+            value = self.data[start:end]
+            if value == target:
+                return True
+            if value < target:
+                low = end + 1
+            else:
+                high = start
+        return False
+    def close(self):
+        self.data.close()
 
 
 def normalize_site(value):
@@ -247,23 +275,46 @@ def _refresh_lists(directory, force):
         if not force and path.exists() and time.time() - path.stat().st_mtime < 86400:
             continue
         try:
-            with urllib.request.urlopen(urls[category], timeout=90) as response:
-                if response.status != 200:
-                    raise ValueError('Category download failed.')
-                raw = response.read(50_000_001)
-            if len(raw) > 50_000_000:
-                raise ValueError('Category list is too large.')
-            text = raw.decode('utf-8')
-            domains = parse_list(text)
+            sources = [urls[category]]
+            prefix = 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/'
+            if sources[0].startswith(prefix):
+                sources.append('https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/' + sources[0][len(prefix):])
+            for index, url in enumerate(sources):
+                print(category + ': downloading from ' + ('primary source' if index == 0 else 'mirror') + ' (45-second transfer deadline).', flush=True)
+                try:
+                    domains = parse_list(download(url).decode('utf-8'))
+                    break
+                except (OSError, ValueError, UnicodeError):
+                    if index == len(sources) - 1:
+                        raise
+                    print(category + ': primary failed; trying mirror.', flush=True)
             temporary = path.with_suffix('.tmp')
             hub.write(temporary, '\n'.join(sorted(domains)) + '\n')
             os.replace(temporary, path)
-            print(category + ': downloaded and validated category list.')
+            del domains
+            print(category + ': downloaded and validated category list.', flush=True)
         except (OSError, ValueError, UnicodeError) as error:
             if not path.exists():
                 raise RuntimeError('No usable ' + category + ' list: ' + str(error)) from error
             parse_list(path.read_text())
             print(category + ': download failed; retaining last known good list: ' + str(error))
+
+def download(url):
+    deadline = time.monotonic() + 45
+    with urllib.request.urlopen(url, timeout=10) as response:
+        if response.status != 200:
+            raise ValueError('Category download failed.')
+        chunks, size = [], 0
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError('Category download exceeded total time limit.')
+            chunk = response.read(65536)
+            if not chunk:
+                return b''.join(chunks)
+            size += len(chunk)
+            if size > 50_000_000:
+                raise ValueError('Category list is too large.')
+            chunks.append(chunk)
 
 
 def ancestors(domain):
@@ -290,10 +341,12 @@ def blocked(domain, profile):
         with _cache_lock:
             current = _cache.get(cache_key)
             if current is None or current[0] != signature:
-                current = (signature, parse_list(path.read_text()))
+                if current is not None:
+                    current[1].close()
+                current = (signature, DomainFile(path))
                 _cache[cache_key] = current
-        if any(x in current[1] for x in names):
-            return True
+            if any(x in current[1] for x in names):
+                return True
     return False
 
 
