@@ -1,4 +1,6 @@
 import importlib.util
+import http.client
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -74,6 +76,7 @@ class HubTests(unittest.TestCase):
             self.assertFalse(any(p == 'zones/delete' and a['zone'] == 'unrelated.example' for p, a in FakeAPI.calls))
             settings = [a for p, a in FakeAPI.calls if p == 'settings/set']
             self.assertEqual(settings[-1]['customBlockingAddresses'], '8.8.8.8')
+            self.assertNotIn('webServiceLocalAddresses', settings[-1])
             records = [a for p, a in FakeAPI.calls if p == 'zones/records/add']
             self.assertTrue(all(a['ipAddress'] == '45.88.89.23' and a['type'] == 'A' for a in records))
             self.assertTrue(any(a['domain'] == '*.googlevideo.com' for a in records))
@@ -87,6 +90,29 @@ class HubTests(unittest.TestCase):
                 self.assertEqual(settings['dns_ips'], ['8.8.8.8'])
                 config = plistlib.loads(hub.profile(settings, (root/'shared/ca.der').read_bytes()))
                 self.assertEqual(config['PayloadContent'][1]['DNSSettings']['ServerAddresses'], ['8.8.8.8'])
+
+    def test_download_disconnect_rechecks_installed_app_before_retry(self):
+        class FakeAPI:
+            installed = False
+            downloads = 0
+            def call(self, path, **params):
+                if path == 'apps/list':
+                    return {'response': {'apps': [{'name': 'Block Page'}] if self.installed else []}}
+                self.downloads += 1
+                self.installed = True
+                raise http.client.RemoteDisconnected('restarted')
+        api = FakeAPI()
+        with patch.object(hub.time, 'sleep'):
+            hub.ensure_blockpage(api)
+        self.assertEqual(api.downloads, 1)
+
+    def test_download_uses_longer_timeout(self):
+        api = object.__new__(hub.API)
+        api.token = 'test-token'
+        with patch.object(hub.urllib.request, 'urlopen') as urlopen:
+            urlopen.return_value.__enter__.return_value = io.BytesIO(b'{"status":"ok"}')
+            api.call('apps/downloadAndInstall', name='Block Page')
+            self.assertEqual(urlopen.call_args.kwargs['timeout'], 120)
 
     def test_invalid_addresses_rejected(self):
         for addr in ['127.0.0.1', '192.168.1.5', '::1', 'not-an-ip']:

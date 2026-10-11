@@ -3,6 +3,8 @@
 import argparse
 import base64
 import ipaddress
+import http.client
+import sys
 import json
 import os
 import re
@@ -328,7 +330,7 @@ class API:
             try:
                 self.token = self.call('user/login', user='admin', **{'pass': password})['token']
                 return
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, http.client.HTTPException):
                 time.sleep(2)
         raise RuntimeError('Technitium API did not become ready.')
 
@@ -337,7 +339,7 @@ class API:
             data=urllib.parse.urlencode(params).encode(), method='POST')
         if self.token:
             req.add_header('Authorization', 'Bearer ' + self.token)
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=120 if path == 'apps/downloadAndInstall' else 20) as response:
             data = json.load(response)
         if data.get('status') != 'ok':
             raise RuntimeError('Technitium API ' + path + ': ' + str(data.get('errorMessage', data.get('status'))))
@@ -345,6 +347,21 @@ class API:
 
     def close(self):
         self.call('user/logout')
+
+def ensure_blockpage(api):
+    # Check before each attempt: a disconnected response can still mean installation succeeded.
+    for attempt in range(3):
+        try:
+            apps = api.call('apps/list')['response']['apps']
+            if any(a['name'] == 'Block Page' for a in apps):
+                return
+            api.call('apps/downloadAndInstall', name='Block Page', url='https://download.technitium.com/dns/apps/BlockPageApp.zip')
+            return
+        except (OSError, http.client.HTTPException) as error:
+            if attempt == 2:
+                raise RuntimeError('Block Page installation could not be confirmed after retries. Check Technitium server logs.') from error
+            print('Technitium connection interrupted; checking app installation before retrying.')
+            time.sleep(2)
 
 def apply():
     with (ROOT / 'policy.lock').open('a') as lock:
@@ -365,11 +382,8 @@ def _apply():
                  recursion='AllowOnlyForPrivateNetworks', enableBlocking='true',
                  blockingType='CustomAddress', customBlockingAddresses=node['public_ip'],
                  blockListUrls=','.join(policy['blocklists'][k] for k in policy['enabled_categories']),
-                 blockListUpdateIntervalHours=24, logQueries='false', dnssecValidation='true', dnsServerLocalEndPoints='0.0.0.0:53',
-                 webServiceLocalAddresses='0.0.0.0')
-        apps = api.call('apps/list')['response']['apps']
-        if not any(a['name'] == 'Block Page' for a in apps):
-            api.call('apps/downloadAndInstall', name='Block Page', url='https://download.technitium.com/dns/apps/BlockPageApp.zip')
+                 blockListUpdateIntervalHours=24, logQueries='false', dnssecValidation='true', dnsServerLocalEndPoints='0.0.0.0:53')
+        ensure_blockpage(api)
         config = [{'name': 'private', 'enableWebServer': True, 'webServerLocalAddresses': ['0.0.0.0'],
                    'webServerUseSelfSignedTlsCertificate': False, 'webServerTlsCertificateFilePath': '/run/dns-hub/ca.p12',
                    'webServerTlsCertificatePassword': '', 'webServerEnableOnlineCertificateSigning': True,
@@ -400,7 +414,10 @@ def _apply():
         api.call('blocked/add', domain='blocked.dns-hub.test')
         print('Filtering, YouTube redirects and block-page app configured.')
     finally:
-        api.close()
+        try:
+            api.close()
+        except (OSError, RuntimeError, http.client.HTTPException):
+            print('API logout could not be confirmed; the session will expire automatically.', file=sys.stderr)
 
 def dns_query(name):
     qname = b''.join(bytes([len(s)]) + s.encode() for s in name.split('.')) + b'\0'
